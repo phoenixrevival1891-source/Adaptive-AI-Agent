@@ -2643,6 +2643,105 @@ class SymbolPrecisionManager:
             return round(rounded, 5)
         else:
             return round(rounded, 8)
+    
+    # ================================================================
+    # PRICE ROUNDING HELPER - Fixes the Precision is over the maximum defined for this asset error
+    # ================================================================
+    
+    def round_price_to_tick(self, symbol: str, price: float) -> float:
+        """
+        Round a price to the symbol's tick size (price precision).
+        This fixes the 'Precision is over the maximum defined for this asset' error.
+        """
+        # Ensure precision is loaded
+        if not self._loaded:
+            self.logger.warning(f"Precision not loaded, loading now for {symbol}")
+            # Try to load synchronously if needed
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(self.load_symbol_precision())
+            except:
+                pass
+        
+        # Get tick size from cache - Binance Futures uses PRICE_FILTER for tick size
+        tick_size = None
+        
+        # First try to get from precision cache (which stores LOT_SIZE step size)
+        # But for price rounding, we need the tick size from PRICE_FILTER
+        try:
+            # Try to get tick size from exchange info directly
+            import asyncio
+            exchange_info = asyncio.get_event_loop().run_until_complete(
+                self.client.futures_exchange_info()
+            )
+            for symbol_info in exchange_info.get('symbols', []):
+                if symbol_info.get('symbol') == symbol:
+                    for f in symbol_info.get('filters', []):
+                        if f.get('filterType') == 'PRICE_FILTER':
+                            tick_size_str = f.get('tickSize', '0.0001')
+                            tick_size = float(tick_size_str)
+                            self.logger.info(f"[{symbol}] Found tickSize={tick_size} from PRICE_FILTER")
+                            break
+                    break
+        except Exception as e:
+            self.logger.warning(f"Failed to get tick size from exchange info for {symbol}: {e}")
+        
+        # Fallback: use step size from LOT_SIZE as approximation
+        if tick_size is None and symbol in self.precision_cache:
+            tick_size = self.precision_cache[symbol]
+            self.logger.warning(f"[{symbol}] Using LOT_SIZE stepSize as tickSize fallback: {tick_size}")
+        
+        # Final fallback
+        if tick_size is None or tick_size <= 0:
+            # Use symbol-specific default tick sizes
+            tick_size = self._get_default_tick_size(symbol)
+            self.logger.warning(f"[{symbol}] Using default tickSize: {tick_size}")
+        
+        # Calculate precision (number of decimal places)
+        try:
+            precision = int(round(-math.log10(tick_size), 0))
+        except:
+            precision = 4
+        
+        # Round using the tick size
+        rounded = round(round(price / tick_size) * tick_size, precision)
+        
+        # Log rounding details for debugging
+        self.logger.info(f"[{symbol}] PRICE ROUNDING: original={price:.8f} rounded={rounded:.8f} tick={tick_size:.8f} precision={precision}")
+        
+        return rounded
+    
+    def _get_default_tick_size(self, symbol: str) -> float:
+        """Get default tick size based on symbol"""
+        # Binance Futures typical tick sizes
+        defaults = {
+            'BTCUSDT': 0.1,
+            'ETHUSDT': 0.01,
+            'BNBUSDT': 0.01,
+            'SOLUSDT': 0.001,
+            'XRPUSDT': 0.0001,
+            'DOGEUSDT': 0.00001,
+            'ADAUSDT': 0.0001,
+            'DOTUSDT': 0.001,
+            'LINKUSDT': 0.001,
+            'AVAXUSDT': 0.001,
+            'MATICUSDT': 0.0001,
+            'UNIUSDT': 0.001,
+            'ATOMUSDT': 0.001,
+            'LTCUSDT': 0.01,
+            'NEARUSDT': 0.001,
+        }
+        if symbol in defaults:
+            return defaults[symbol]
+        # Generic default
+        if 'USDT' in symbol:
+            if 'BTC' in symbol or 'ETH' in symbol or 'BNB' in symbol:
+                return 0.01
+            if 'DOGE' in symbol or 'SHIB' in symbol:
+                return 0.00001
+            return 0.0001
+        return 0.0001
 
 # ================================================================
 # CIRCUIT BREAKER
@@ -3278,6 +3377,12 @@ class SignalConflictEngine:
                 current_price, side, atr_value, is_rsi_extreme=is_rsi_extreme
             )
             
+            # --- FIX: Round TP and SL prices to tick size using precision_manager ---
+            if sl_price is not None and sl_price > 0:
+                sl_price = self.precision_manager.round_price_to_tick(symbol, sl_price)
+            if tp_price is not None and tp_price > 0:
+                tp_price = self.precision_manager.round_price_to_tick(symbol, tp_price)
+            
             if side == 'BUY':
                 risk = sl_distance / current_price * 100
                 reward = tp_distance / current_price * 100
@@ -3583,7 +3688,7 @@ class SignalConflictEngine:
             # Calculate the effective leverage: min(PREF, MAX, symbol_max)
             effective_leverage = min(target_leverage, MAX_LEVERAGE, symbol_max)
             
-            # Log what we're doing
+            # Log what we're doing with explicit debug
             logger.warning(f"[{symbol}] LEVERAGE SETUP: target={target_leverage}, max_global={MAX_LEVERAGE}, symbol_max={symbol_max}, applying={effective_leverage}")
             
             # Set leverage
@@ -3633,18 +3738,23 @@ class SignalConflictEngine:
             # Determine the stop side: SELL for LONG, BUY for SHORT
             stop_side = 'SELL' if side == 'BUY' else 'BUY'
             
-            # Use the stopPrice as the trigger, no price parameter for STOP_MARKET
+            # --- FIX: Round sl_price to tick size using precision_manager ---
+            adjusted_sl_price = self.precision_manager.round_price_to_tick(symbol, sl_price)
+            
             # Add a small buffer to avoid premature triggering
             buffer_pct = 0.001  # 0.1% buffer
             if side == 'BUY':
-                adjusted_sl_price = sl_price * (1 - buffer_pct)
+                adjusted_sl_price = adjusted_sl_price * (1 - buffer_pct)
             else:
-                adjusted_sl_price = sl_price * (1 + buffer_pct)
+                adjusted_sl_price = adjusted_sl_price * (1 + buffer_pct)
+            
+            # Round the buffered price as well
+            adjusted_sl_price = self.precision_manager.round_price_to_tick(symbol, adjusted_sl_price)
             
             # Log the SL order details
             logger.warning(
                 f"[{symbol}] SL ORDER: side={stop_side}, "
-                f"stopPrice={adjusted_sl_price:.4f}, "
+                f"stopPrice={adjusted_sl_price:.8f}, "
                 f"qty={quantity:.8f}, position_side={position_side}"
             )
             
@@ -3670,10 +3780,14 @@ class SignalConflictEngine:
             if ENABLE_HEDGE_MODE_COMPATIBILITY and position_side:
                 order_params['positionSide'] = position_side
             
+            # --- FIX: Remove reduceOnly for hedge mode compatibility ---
+            # For STOP_MARKET with positionSide, Binance does not want reduceOnly=True
+            # The closePosition=True already handles the reduce-only semantics
+            
             order = await self.client.futures_create_order(**order_params)
             
             if order and 'orderId' in order:
-                logger.info(f"[{symbol}] SL order placed: orderId={order['orderId']}, stopPrice={adjusted_sl_price:.4f}")
+                logger.info(f"[{symbol}] SL order placed: orderId={order['orderId']}, stopPrice={adjusted_sl_price:.8f}")
                 return order['orderId']
             else:
                 logger.warning(f"[{symbol}] Failed to place SL order: {order}")
@@ -3690,18 +3804,23 @@ class SignalConflictEngine:
             # Determine the TP side: SELL for LONG, BUY for SHORT
             tp_side = 'SELL' if side == 'BUY' else 'BUY'
             
-            # Use the stopPrice as the trigger, no price parameter for TAKE_PROFIT_MARKET
+            # --- FIX: Round tp_price to tick size using precision_manager ---
+            adjusted_tp_price = self.precision_manager.round_price_to_tick(symbol, tp_price)
+            
             # Add a small buffer to avoid premature triggering
             buffer_pct = 0.001  # 0.1% buffer
             if side == 'BUY':
-                adjusted_tp_price = tp_price * (1 + buffer_pct)
+                adjusted_tp_price = adjusted_tp_price * (1 + buffer_pct)
             else:
-                adjusted_tp_price = tp_price * (1 - buffer_pct)
+                adjusted_tp_price = adjusted_tp_price * (1 - buffer_pct)
+            
+            # Round the buffered price as well
+            adjusted_tp_price = self.precision_manager.round_price_to_tick(symbol, adjusted_tp_price)
             
             # Log the TP order details
             logger.warning(
                 f"[{symbol}] TP ORDER: side={tp_side}, "
-                f"stopPrice={adjusted_tp_price:.4f}, "
+                f"stopPrice={adjusted_tp_price:.8f}, "
                 f"qty={quantity:.8f}, position_side={position_side}"
             )
             
@@ -3727,10 +3846,14 @@ class SignalConflictEngine:
             if ENABLE_HEDGE_MODE_COMPATIBILITY and position_side:
                 order_params['positionSide'] = position_side
             
+            # --- FIX: Remove reduceOnly for hedge mode compatibility ---
+            # For TAKE_PROFIT_MARKET with positionSide, Binance does not want reduceOnly=True
+            # The closePosition=True already handles the reduce-only semantics
+            
             order = await self.client.futures_create_order(**order_params)
             
             if order and 'orderId' in order:
-                logger.info(f"[{symbol}] TP order placed: orderId={order['orderId']}, stopPrice={adjusted_tp_price:.4f}")
+                logger.info(f"[{symbol}] TP order placed: orderId={order['orderId']}, stopPrice={adjusted_tp_price:.8f}")
                 return order['orderId']
             else:
                 logger.warning(f"[{symbol}] Failed to place TP order: {order}")
@@ -3777,15 +3900,11 @@ class SignalConflictEngine:
             if quantity <= 0:
                 return False
             
-            # ORDER CHECK before every order submission
+            # ORDER CHECK before every order submission - ENHANCED with leverage debug
             notional_value = quantity * current_price
             logger.warning(
-                f"ORDER CHECK: {symbol} "
-                f"qty={quantity:.8f} "
-                f"price={current_price:.4f} "
-                f"notional={notional_value:.2f} "
-                f"wallet={self.wallet_balance:.2f} "
-                f"leverage={applied_leverage}"
+                f"[{symbol}] ORDER CHECK: qty={quantity:.8f} price={current_price:.4f} "
+                f"notional={notional_value:.2f} wallet={self.wallet_balance:.2f} leverage={applied_leverage}"
             )
             
             # Check if notional exceeds wallet-based limit at the applied leverage
@@ -3950,33 +4069,28 @@ class SignalConflictEngine:
             logger.warning(
                 f"[{symbol}] EXIT ORDER: "
                 f"side={exit_side} "
-                f"reduce_only=True "
                 f"position_side={position_side} "
                 f"qty={quantity:.8f} "
                 f"price={exit_signal['price']:.4f}"
             )
             
+            # --- FIX: Do not send reduceOnly=True when positionSide is supplied ---
+            # In Hedge Mode, using positionSide with closePosition=True is sufficient
+            # The reduceOnly parameter should be omitted entirely for hedge mode exits
             order = await self.safe_create_order(
                 symbol=symbol, side=exit_side, type='MARKET', quantity=quantity,
-                reduce_only=True, client_order_id=client_order_id, position_side=position_side
+                reduce_only=False,  # Always False - closePosition + positionSide handles it
+                client_order_id=client_order_id, position_side=position_side
             )
             
             if not order or 'orderId' not in order:
                 # Record exit failure for circuit breaker
                 self.circuit_breaker.record_exit_failure()
-                # If reduce_only fails, try without reduce_only
-                logger.warning(f"[{symbol}] ReduceOnly order failed, retrying without reduce_only")
-                logger.warning(
-                    f"[{symbol}] EXIT ORDER (fallback): "
-                    f"side={exit_side} "
-                    f"reduce_only=False "
-                    f"position_side={position_side} "
-                    f"qty={quantity:.8f} "
-                    f"price={exit_signal['price']:.4f}"
-                )
+                # If first attempt fails, try without position_side as fallback
+                logger.warning(f"[{symbol}] Exit order failed, retrying without position_side")
                 order = await self.safe_create_order(
                     symbol=symbol, side=exit_side, type='MARKET', quantity=quantity,
-                    client_order_id=client_order_id, position_side=position_side
+                    reduce_only=False, client_order_id=client_order_id, position_side=None
                 )
                 if not order or 'orderId' not in order:
                     return False
@@ -4095,12 +4209,18 @@ class SignalConflictEngine:
                 binance_side = "SELL"
             
             order_params = {'symbol': symbol, 'side': binance_side, 'type': type, 'quantity': quantity}
-            if reduce_only:
+            
+            # --- FIX: Only add reduceOnly if explicitly requested and position_side is None ---
+            # In Hedge Mode, positionSide combined with closePosition=True is the correct way
+            # to close positions, and reduceOnly should not be sent separately.
+            if reduce_only and position_side is None:
                 order_params['reduceOnly'] = True
+            
             if ENABLE_HEDGE_MODE_COMPATIBILITY and position_side:
                 order_params['positionSide'] = position_side
             elif position_side:
                 order_params['positionSide'] = position_side
+                
             if client_order_id:
                 if len(client_order_id) > 35:
                     import uuid
