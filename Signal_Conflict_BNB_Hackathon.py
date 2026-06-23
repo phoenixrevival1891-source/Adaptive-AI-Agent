@@ -2557,18 +2557,19 @@ class BinanceDL:
             return 0.0
 
 # ================================================================
-# SYMBOL PRECISION MANAGER - Loads REAL LOT_SIZE from Binance
+# SYMBOL PRECISION MANAGER - Loads REAL tickSize & stepSize from Binance
 # ================================================================
 
 class SymbolPrecisionManager:
     def __init__(self, client: AsyncClient, logger):
         self.client = client
         self.logger = logger
-        self.precision_cache = {}
+        self.tick_cache = {}  # PRICE_FILTER tickSize
+        self.step_cache = {}  # LOT_SIZE stepSize
         self._loaded = False
     
     async def load_symbol_precision(self):
-        """Load LOT_SIZE step sizes from Binance futures exchange info"""
+        """Load PRICE_FILTER tickSize and LOT_SIZE stepSize from Binance futures exchange info"""
         if self._loaded:
             return
         
@@ -2576,59 +2577,61 @@ class SymbolPrecisionManager:
             self.logger.info("Loading symbol precision from Binance exchange info...")
             exchange_info = await self.client.futures_exchange_info()
             
-            count = 0
+            tick_count = 0
+            step_count = 0
             for symbol_info in exchange_info.get('symbols', []):
                 symbol = symbol_info.get('symbol')
                 if not symbol:
                     continue
                 
                 for f in symbol_info.get('filters', []):
-                    if f.get('filterType') == 'LOT_SIZE':
-                        step_size_str = f.get('stepSize', '0.00001')
-                        step_size = float(step_size_str)
-                        self.precision_cache[symbol] = step_size
-                        count += 1
-                        break
+                    if f.get('filterType') == 'PRICE_FILTER':
+                        tick_size_str = f.get('tickSize')
+                        if tick_size_str:
+                            tick_size = float(tick_size_str)
+                            self.tick_cache[symbol] = tick_size
+                            tick_count += 1
+                    elif f.get('filterType') == 'LOT_SIZE':
+                        step_size_str = f.get('stepSize')
+                        if step_size_str:
+                            step_size = float(step_size_str)
+                            self.step_cache[symbol] = step_size
+                            step_count += 1
             
             self._loaded = True
-            self.logger.info(f"Loaded precision for {count} symbols from Binance exchange info")
+            self.logger.info(f"Loaded precision: tickSize for {tick_count} symbols, stepSize for {step_count} symbols")
+            
+            # Log fallback warning if tickSize is missing for some symbols
+            missing_tick = [s for s in self.step_cache if s not in self.tick_cache]
+            if missing_tick:
+                self.logger.warning(f"Symbols missing PRICE_FILTER tickSize: {missing_tick[:5]} (will use stepSize fallback)")
             
         except Exception as e:
             self.logger.error(f"Failed to load symbol precision from exchange info: {e}")
-            # Fallback: use default step size with warning
+            # Fallback: use default values with warning
             self._loaded = True
-            self.logger.warning("Using fallback precision step_size = 0.00001 for all symbols")
+            self.logger.warning("Using fallback precision: tickSize=0.0001, stepSize=0.00001 for all symbols")
     
     def round_to_step_size(self, quantity: float, symbol: str) -> float:
         """Round quantity to the symbol's LOT_SIZE step size"""
-        # Ensure precision is loaded
         if not self._loaded:
-            # Try to load synchronously - this should have been called during setup
-            pass
-        
-        # Get step size from cache
-        if symbol in self.precision_cache:
-            step_size = self.precision_cache[symbol]
-        else:
-            # Default fallback if not loaded
+            self.logger.warning(f"Precision not loaded, using default step_size for {symbol}")
             step_size = 0.00001
-            self.logger.warning(f"Symbol {symbol} not found in precision cache, using default step_size=0.00001")
+        else:
+            step_size = self.step_cache.get(symbol)
+            if step_size is None or step_size <= 0:
+                # Fallback to default
+                step_size = 0.00001
+                self.logger.warning(f"Symbol {symbol} not found in step cache, using default step_size=0.00001")
         
         if step_size <= 0:
-            self.logger.warning(f"Invalid step_size {step_size} for {symbol}, using default 0.00001")
             step_size = 0.00001
         
         # Round down to nearest step size
         rounded = math.floor(quantity / step_size) * step_size
-        
-        # Ensure at least one step size
         rounded = max(rounded, step_size)
         
-        # Log precision details for debugging
-        self.logger.info(f"[{symbol}] qty={quantity:.8f} rounded={rounded:.8f} step={step_size:.8f}")
-        
         # Avoid floating point precision issues
-        # Round to a reasonable number of decimal places
         if step_size >= 1:
             return round(rounded, 0)
         elif step_size >= 0.1:
@@ -2645,58 +2648,33 @@ class SymbolPrecisionManager:
             return round(rounded, 8)
     
     # ================================================================
-    # PRICE ROUNDING HELPER - Fixes the Precision is over the maximum defined for this asset error
+    # PRICE ROUNDING HELPER - Fixes the "Precision is over the maximum" error
+    # Uses REAL tickSize from PRICE_FILTER, NOT LOT_SIZE stepSize
     # ================================================================
     
     def round_price_to_tick(self, symbol: str, price: float) -> float:
         """
         Round a price to the symbol's tick size (price precision).
         This fixes the 'Precision is over the maximum defined for this asset' error.
+        Uses PRICE_FILTER tickSize (NOT LOT_SIZE stepSize).
         """
-        # Ensure precision is loaded
         if not self._loaded:
-            self.logger.warning(f"Precision not loaded, loading now for {symbol}")
-            # Try to load synchronously if needed
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                loop.run_until_complete(self.load_symbol_precision())
-            except:
-                pass
-        
-        # Get tick size from cache - Binance Futures uses PRICE_FILTER for tick size
-        tick_size = None
-        
-        # First try to get from precision cache (which stores LOT_SIZE step size)
-        # But for price rounding, we need the tick size from PRICE_FILTER
-        try:
-            # Try to get tick size from exchange info directly
-            import asyncio
-            exchange_info = asyncio.get_event_loop().run_until_complete(
-                self.client.futures_exchange_info()
-            )
-            for symbol_info in exchange_info.get('symbols', []):
-                if symbol_info.get('symbol') == symbol:
-                    for f in symbol_info.get('filters', []):
-                        if f.get('filterType') == 'PRICE_FILTER':
-                            tick_size_str = f.get('tickSize', '0.0001')
-                            tick_size = float(tick_size_str)
-                            self.logger.info(f"[{symbol}] Found tickSize={tick_size} from PRICE_FILTER")
-                            break
-                    break
-        except Exception as e:
-            self.logger.warning(f"Failed to get tick size from exchange info for {symbol}: {e}")
-        
-        # Fallback: use step size from LOT_SIZE as approximation
-        if tick_size is None and symbol in self.precision_cache:
-            tick_size = self.precision_cache[symbol]
-            self.logger.warning(f"[{symbol}] Using LOT_SIZE stepSize as tickSize fallback: {tick_size}")
-        
-        # Final fallback
-        if tick_size is None or tick_size <= 0:
-            # Use symbol-specific default tick sizes
+            self.logger.warning(f"Precision not loaded, using default tick_size for {symbol}")
             tick_size = self._get_default_tick_size(symbol)
-            self.logger.warning(f"[{symbol}] Using default tickSize: {tick_size}")
+        else:
+            # Use tickSize from PRICE_FILTER
+            tick_size = self.tick_cache.get(symbol)
+            
+            # Fallback: use stepSize if tickSize is missing
+            if tick_size is None or tick_size <= 0:
+                tick_size = self.step_cache.get(symbol)
+                if tick_size is None or tick_size <= 0:
+                    tick_size = self._get_default_tick_size(symbol)
+                    self.logger.warning(f"[{symbol}] Using default tickSize (missing from cache): {tick_size}")
+        
+        if tick_size is None or tick_size <= 0:
+            tick_size = self._get_default_tick_size(symbol)
+            self.logger.warning(f"[{symbol}] Using fallback tickSize: {tick_size}")
         
         # Calculate precision (number of decimal places)
         try:
@@ -2708,13 +2686,13 @@ class SymbolPrecisionManager:
         rounded = round(round(price / tick_size) * tick_size, precision)
         
         # Log rounding details for debugging
-        self.logger.info(f"[{symbol}] PRICE ROUNDING: original={price:.8f} rounded={rounded:.8f} tick={tick_size:.8f} precision={precision}")
+        self.logger.info(f"[{symbol}] PRICE ROUNDING: original={price:.8f} rounded={rounded:.8f} tick={tick_size:.8f}")
         
         return rounded
     
     def _get_default_tick_size(self, symbol: str) -> float:
-        """Get default tick size based on symbol"""
-        # Binance Futures typical tick sizes
+        """Get default tick size based on symbol (safe fallback)"""
+        # Binance Futures typical tick sizes (from PRICE_FILTER)
         defaults = {
             'BTCUSDT': 0.1,
             'ETHUSDT': 0.01,
@@ -2734,7 +2712,7 @@ class SymbolPrecisionManager:
         }
         if symbol in defaults:
             return defaults[symbol]
-        # Generic default
+        # Generic default based on symbol
         if 'USDT' in symbol:
             if 'BTC' in symbol or 'ETH' in symbol or 'BNB' in symbol:
                 return 0.01
