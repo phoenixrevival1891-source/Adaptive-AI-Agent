@@ -92,7 +92,7 @@ parser.add_argument("--close-all", action="store_true", help="Close all open pos
 parser.add_argument("--show-trades", action="store_true", help="Show today's trades and exit")
 parser.add_argument("--emergency-stop", action="store_true", help="Emergency stop - close all positions and stop trading")
 parser.add_argument("--mode", type=str, default="adaptive", choices=["fade", "breakout", "wait", "adaptive"], 
-                    help="Strategy mode: fade=conflict means reversal, breakout=conflict means continuation, wait=wait for resolution, adaptive=dynamic resolution")
+                    help="Strategy mode: fade=reversal bias, breakout=continuation bias, wait=wait for resolution, adaptive=dynamic resolution")
 parser.add_argument("--dashboard", action="store_true", help="Start web dashboard")
 parser.add_argument("--dashboard-port", type=int, default=5000, help="Dashboard port")
 parser.add_argument("--disable-ai", action="store_true", help="Disable AI decision layer (use rule-based)")
@@ -256,17 +256,17 @@ MAX_DAILY_TRADES = _safe_int_env("MAX_DAILY_TRADES", 10)
 MIN_WIN_RATE = _safe_float_env("MIN_WIN_RATE", 0.4)
 MIN_STOP_DISTANCE_PCT = _safe_float_env("MIN_STOP_DISTANCE_PCT", 0.3)
 MIN_PROFIT_PCT = _safe_float_env("MIN_PROFIT_PCT", 0.5)
-ATR_STOP_MULTIPLIER = _safe_float_env("ATR_STOP_MULTIPLIER", 1.5)
+ATR_STOP_MULTIPLIER = _safe_float_env("ATR_STOP_MULTIPLIER", 2.5)
 ATR_PERIOD = _safe_int_env("ATR_PERIOD", 14)
 
 # Entry/Exit Parameters (safe ranges only)
 ENTRY_BUFFER_PCT = _safe_float_env("ENTRY_BUFFER_PCT", 0.1)
 EXIT_BUFFER_PCT = _safe_float_env("EXIT_BUFFER_PCT", 0.1)
-MAX_STOP_LOSS_PCT = _safe_float_env("MAX_STOP_LOSS_PCT", 2.0)
+MAX_STOP_LOSS_PCT = _safe_float_env("MAX_STOP_LOSS_PCT", 3.5)
 MAX_SLIPPAGE_PCT = _safe_float_env("MAX_SLIPPAGE_PCT", 0.5)
 
 # RRR Alignment Parameters (safe ranges only)
-TP_MULTIPLIER = _safe_float_env("TP_MULTIPLIER", 2.5)
+TP_MULTIPLIER = _safe_float_env("TP_MULTIPLIER", 5.0)
 MIN_EARLY_EXIT_R = _safe_float_env("MIN_EARLY_EXIT_R", 0.5)
 TRAILING_STOP_ACTIVATE_R = _safe_float_env("TRAILING_STOP_ACTIVATE_R", 1.5)
 MAX_SL_PCT_CAP = _safe_float_env("MAX_SL_PCT_CAP", 5.0)
@@ -291,8 +291,8 @@ MAX_PRICE_CHANGE_24H_PCT = _safe_float_env("MAX_PRICE_CHANGE_24H_PCT", 15.0)
 MIN_TRADES_FOR_EVALUATION = _safe_int_env("MIN_TRADES_FOR_EVALUATION", 10)
 
 # --- TRAILING STOP PARAMETERS ---
-TRAILING_STOP_ACTIVATE_PCT = _safe_float_env("TRAILING_STOP_ACTIVATE_PCT", 1.5)
-TRAILING_STOP_DISTANCE_PCT = _safe_float_env("TRAILING_STOP_DISTANCE_PCT", 0.5)
+TRAILING_STOP_ACTIVATE_PCT = _safe_float_env("TRAILING_STOP_ACTIVATE_PCT", 3.0)
+TRAILING_STOP_DISTANCE_PCT = _safe_float_env("TRAILING_STOP_DISTANCE_PCT", 1.5)
 BREAKEVEN_ACTIVATE_PCT = _safe_float_env("BREAKEVEN_ACTIVATE_PCT", 0.8)
 
 # --- EARLY STOP LOSS PROTECTION ---
@@ -300,7 +300,7 @@ MIN_HOLD_TIME_BEFORE_SL_HOURS = _safe_float_env("MIN_HOLD_TIME_BEFORE_SL_HOURS",
 MAX_EARLY_SL_PCT = _safe_float_env("MAX_EARLY_SL_PCT", 1.0)
 
 # --- IMPROVED EXIT PARAMETERS ---
-EARLY_EXIT_PROFIT_THRESHOLD = _safe_float_env("EARLY_EXIT_PROFIT_THRESHOLD", 0.3)
+EARLY_EXIT_PROFIT_THRESHOLD = _safe_float_env("EARLY_EXIT_PROFIT_THRESHOLD", 1.5)
 MEAN_BAND_EXIT_ENABLED = os.getenv("MEAN_BAND_EXIT_ENABLED", "true").lower() in {"1","true","yes","y"}
 
 # --- SHORT POSITION CONTROL ---
@@ -325,14 +325,15 @@ VOLATILITY_CIRCUIT_BREAKER_PCT = _safe_float_env("VOLATILITY_CIRCUIT_BREAKER_PCT
 VOLATILITY_LOOKBACK_MINUTES = _safe_int_env("VOLATILITY_LOOKBACK_MINUTES", 15)
 
 # --- PARTIAL PROFIT TAKING ---
-ENABLE_PARTIAL_PROFIT_TAKING = os.getenv("ENABLE_PARTIAL_PROFIT_TAKING", "true").lower() in {"1","true","yes","y"}
-PARTIAL_PROFIT_LEVELS = json.loads(os.getenv("PARTIAL_PROFIT_LEVELS", '[0.5, 1.0, 1.5]'))
-PARTIAL_PROFIT_PERCENTAGES = json.loads(os.getenv("PARTIAL_PROFIT_PERCENTAGES", '[0.25, 0.25, 0.5]'))
+ENABLE_PARTIAL_PROFIT_TAKING = os.getenv("ENABLE_PARTIAL_PROFIT_TAKING", "false").lower() in {"1","true","yes","y"}
+PARTIAL_PROFIT_LEVELS = json.loads(os.getenv("PARTIAL_PROFIT_LEVELS", '[1.5, 3.0, 5.0]'))
+PARTIAL_PROFIT_PERCENTAGES = json.loads(os.getenv("PARTIAL_PROFIT_PERCENTAGES", '[0.20, 0.30, 0.50]'))
 
-# Signal Weighting
-TREND_SIGNAL_WEIGHT = _safe_float_env("TREND_SIGNAL_WEIGHT", 0.4)
-REVERSION_SIGNAL_WEIGHT = _safe_float_env("REVERSION_SIGNAL_WEIGHT", 0.4)
-VOLUME_CONFIRMATION_WEIGHT = _safe_float_env("VOLUME_CONFIRMATION_WEIGHT", 0.1)
+# Signal Weighting - Removed exact weights, using internal constants
+# These are not exposed as env vars or in any output
+_TREND_WEIGHT = 0.4
+_REVERSION_WEIGHT = 0.4
+_VOLUME_WEIGHT = 0.1
 
 # Conflict Zones
 ENABLE_CONFLICT_ZONES = os.getenv("ENABLE_CONFLICT_ZONES", "true").lower() in {"1","true","yes","y"}
@@ -490,10 +491,11 @@ DASHBOARD_MAX_HISTORY = _safe_int_env("DASHBOARD_MAX_HISTORY", 200)
 
 # Confidence Engine
 ENABLE_CONFIDENCE_ENGINE = os.getenv("ENABLE_CONFIDENCE_ENGINE", "true").lower() in {"1","true","yes","y"}
-CONFIDENCE_TREND_WEIGHT = _safe_float_env("CONFIDENCE_TREND_WEIGHT", 0.3)
-CONFIDENCE_REVERSION_WEIGHT = _safe_float_env("CONFIDENCE_REVERSION_WEIGHT", 0.3)
-CONFIDENCE_VOLUME_WEIGHT = _safe_float_env("CONFIDENCE_VOLUME_WEIGHT", 0.2)
-CONFIDENCE_REGIME_WEIGHT = _safe_float_env("CONFIDENCE_REGIME_WEIGHT", 0.2)
+# Removed exact weights - using internal constants
+_CONFIDENCE_TREND_WEIGHT = 0.3
+_CONFIDENCE_REVERSION_WEIGHT = 0.3
+_CONFIDENCE_VOLUME_WEIGHT = 0.2
+_CONFIDENCE_REGIME_WEIGHT = 0.2
 
 # AI Decision History
 MAX_DECISION_HISTORY = _safe_int_env("MAX_DECISION_HISTORY", 200)
@@ -954,7 +956,7 @@ class AIDecisionReviewLayer:
                 openai.ChatCompletion.create,
                 model=OPENAI_MODEL,
                 messages=[
-                    {"role": "system", "content": "You are an AI trading judge. Your job is to review the rule-based decision and decide whether to BUY, SELL, or WAIT. Consider the conflict between trend and mean reversion. If signals are strongly aligned, take the trade. If conflict is high, wait. Output format: DECISION: [BUY/SELL/WAIT] CONFIDENCE: [0-100] REASON: [short explanation]"},
+                    {"role": "system", "content": "You are an AI trading judge. Your job is to review the rule-based decision and decide whether to BUY, SELL, or WAIT. Consider the conflict between signals. If signals are strongly aligned, take the trade. If conflict is high, wait. Output format: DECISION: [BUY/SELL/WAIT] CONFIDENCE: [0-100] REASON: [short explanation]"},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=150,
@@ -1074,7 +1076,7 @@ class AIDecisionReviewLayer:
             'symbol': symbol,
             'rule_decision': rule_decision,
             'ai_decision': ai_decision,
-            'explanation': explanation[:200] if explanation else f"Analyzed {symbol}: {trend_signal_val} trend vs {reversion_signal_val} reversion. Conflict score: {conflict_score:.2f}. Decision: {ai_decision}.",
+            'explanation': explanation[:200] if explanation else f"Analyzed {symbol}. Decision: {ai_decision}.",
             'llm_used': llm_used,
             'confidence': confidence,
             'conflict_type': conflict_type,
@@ -1117,16 +1119,16 @@ class AIDecisionReviewLayer:
         now = datetime.now()
         
         sample_data = [
-            {"symbol": "BTCUSDT", "trend": "LONG", "reversion": "SHORT", "rsi": 72, "conflict_score": 0.65, "decision": "WAIT", "confidence": 68, "explanation": "Trend suggests LONG but Mean Reversion suggests SHORT. Conflict level is MODERATE. Decision: WAIT for conflict resolution."},
-            {"symbol": "ETHUSDT", "trend": "SHORT", "reversion": "SHORT", "rsi": 25, "conflict_score": 0.15, "decision": "BUY", "confidence": 82, "explanation": "Trend and Mean Reversion signals are aligned. RSI indicates oversold conditions. Conflict level is LOW. Decision: BUY (adaptive conflict resolution)."},
-            {"symbol": "BNBUSDT", "trend": "LONG", "reversion": "NEUTRAL", "rsi": 58, "conflict_score": 0.25, "decision": "BUY", "confidence": 74, "explanation": "Trend suggests LONG. Conflict level is LOW. Decision: BUY (adaptive conflict resolution)."},
-            {"symbol": "SOLUSDT", "trend": "NEUTRAL", "reversion": "LONG", "rsi": 18, "conflict_score": 0.35, "decision": "BUY", "confidence": 79, "explanation": "Mean Reversion suggests LONG. RSI indicates oversold conditions. Conflict level is LOW. Decision: BUY (adaptive conflict resolution)."},
-            {"symbol": "XRPUSDT", "trend": "SHORT", "reversion": "LONG", "rsi": 68, "conflict_score": 0.58, "decision": "WAIT", "confidence": 55, "explanation": "Trend suggests SHORT but Mean Reversion suggests LONG. Conflict level is MODERATE. Decision: WAIT for conflict resolution."},
-            {"symbol": "ADAUSDT", "trend": "LONG", "reversion": "NEUTRAL", "rsi": 45, "conflict_score": 0.20, "decision": "BUY", "confidence": 71, "explanation": "Trend suggests LONG. Conflict level is LOW. Decision: BUY (adaptive conflict resolution)."},
-            {"symbol": "DOGEUSDT", "trend": "NEUTRAL", "reversion": "SHORT", "rsi": 85, "conflict_score": 0.42, "decision": "SELL", "confidence": 69, "explanation": "Mean Reversion suggests SHORT. RSI indicates overbought conditions. Conflict level is MODERATE. Decision: SELL (adaptive conflict resolution)."},
-            {"symbol": "LINKUSDT", "trend": "SHORT", "reversion": "SHORT", "rsi": 22, "conflict_score": 0.10, "decision": "BUY", "confidence": 85, "explanation": "Trend and Mean Reversion signals are aligned. RSI indicates oversold conditions. Decision: BUY (adaptive conflict resolution)."},
-            {"symbol": "AVAXUSDT", "trend": "LONG", "reversion": "NEUTRAL", "rsi": 52, "conflict_score": 0.18, "decision": "BUY", "confidence": 76, "explanation": "Trend suggests LONG. Conflict level is LOW. Decision: BUY (adaptive conflict resolution)."},
-            {"symbol": "MATICUSDT", "trend": "NEUTRAL", "reversion": "LONG", "rsi": 28, "conflict_score": 0.22, "decision": "BUY", "confidence": 78, "explanation": "Mean Reversion suggests LONG. RSI indicates oversold conditions. Decision: BUY (adaptive conflict resolution)."},
+            {"symbol": "BTCUSDT", "trend": "LONG", "reversion": "SHORT", "rsi": 72, "conflict_score": 0.65, "decision": "WAIT", "confidence": 68, "explanation": "Signal conflict detected - waiting for resolution."},
+            {"symbol": "ETHUSDT", "trend": "SHORT", "reversion": "SHORT", "rsi": 25, "conflict_score": 0.15, "decision": "BUY", "confidence": 82, "explanation": "Signals aligned - favorable entry opportunity."},
+            {"symbol": "BNBUSDT", "trend": "LONG", "reversion": "NEUTRAL", "rsi": 58, "conflict_score": 0.25, "decision": "BUY", "confidence": 74, "explanation": "Trend signal present - entry opportunity detected."},
+            {"symbol": "SOLUSDT", "trend": "NEUTRAL", "reversion": "LONG", "rsi": 18, "conflict_score": 0.35, "decision": "BUY", "confidence": 79, "explanation": "Mean reversion signal detected - favorable entry."},
+            {"symbol": "XRPUSDT", "trend": "SHORT", "reversion": "LONG", "rsi": 68, "conflict_score": 0.58, "decision": "WAIT", "confidence": 55, "explanation": "Signal conflict detected - waiting for resolution."},
+            {"symbol": "ADAUSDT", "trend": "LONG", "reversion": "NEUTRAL", "rsi": 45, "conflict_score": 0.20, "decision": "BUY", "confidence": 71, "explanation": "Trend signal present - entry opportunity detected."},
+            {"symbol": "DOGEUSDT", "trend": "NEUTRAL", "reversion": "SHORT", "rsi": 85, "conflict_score": 0.42, "decision": "SELL", "confidence": 69, "explanation": "Mean reversion signal detected - short opportunity."},
+            {"symbol": "LINKUSDT", "trend": "SHORT", "reversion": "SHORT", "rsi": 22, "conflict_score": 0.10, "decision": "BUY", "confidence": 85, "explanation": "Signals aligned - favorable entry opportunity."},
+            {"symbol": "AVAXUSDT", "trend": "LONG", "reversion": "NEUTRAL", "rsi": 52, "conflict_score": 0.18, "decision": "BUY", "confidence": 76, "explanation": "Trend signal present - entry opportunity detected."},
+            {"symbol": "MATICUSDT", "trend": "NEUTRAL", "reversion": "LONG", "rsi": 28, "conflict_score": 0.22, "decision": "BUY", "confidence": 78, "explanation": "Mean reversion signal detected - favorable entry."},
         ]
         
         for i, data in enumerate(sample_data):
@@ -1261,39 +1263,28 @@ class AIExplanationLayer:
     
     def generate_rule_based_explanation(self, conflict_info: Dict) -> str:
         """Generate explanation without revealing exact strategy thresholds"""
-        trend_signal = conflict_info.get('trend_signal', 'NEUTRAL')
-        reversion_signal = conflict_info.get('reversion_signal', 'NEUTRAL')
-        conflict_score = conflict_info.get('conflict_score', 0)
+        decision = conflict_info.get('trade_signal', 'WAIT')
+        conflict_type = conflict_info.get('conflict_type', 'UNKNOWN')
         current_rsi = conflict_info.get('current_rsi', 50)
         
         explanation_parts = []
         
-        if trend_signal == 'LONG' and reversion_signal == 'SHORT':
-            explanation_parts.append(f"Trend suggests LONG but Mean Reversion suggests SHORT.")
-        elif trend_signal == 'SHORT' and reversion_signal == 'LONG':
-            explanation_parts.append(f"Trend suggests SHORT but Mean Reversion suggests LONG.")
+        if conflict_type == "OPPOSITE":
+            explanation_parts.append("Signals are in conflict.")
         else:
-            explanation_parts.append(f"Trend and Mean Reversion signals are aligned.")
+            explanation_parts.append("Signals are aligned.")
         
         if current_rsi >= 80:
-            explanation_parts.append(f"RSI indicates overbought conditions.")
+            explanation_parts.append("Price showing strength.")
         elif current_rsi <= 20:
-            explanation_parts.append(f"RSI indicates oversold conditions.")
+            explanation_parts.append("Price showing weakness.")
         
-        if conflict_score >= 0.7:
-            explanation_parts.append(f"Signal conflict level is HIGH.")
-        elif conflict_score >= 0.4:
-            explanation_parts.append(f"Signal conflict level is MODERATE.")
-        else:
-            explanation_parts.append(f"Signal conflict level is LOW.")
-        
-        decision = conflict_info.get('trade_signal', 'WAIT')
         if decision == 'WAIT':
-            explanation_parts.append("Decision: WAIT for conflict resolution.")
+            explanation_parts.append("Waiting for clearer signal.")
         elif decision == 'BUY':
-            explanation_parts.append(f"Decision: BUY (adaptive conflict resolution).")
+            explanation_parts.append("Long opportunity detected.")
         elif decision == 'SELL':
-            explanation_parts.append(f"Decision: SELL (adaptive conflict resolution).")
+            explanation_parts.append("Short opportunity detected.")
         
         return " ".join(explanation_parts)
     
@@ -1379,10 +1370,10 @@ class ConfidenceEngine:
         regime_score = self._calculate_regime_score(conflict_info.get('trade_signal'), regime_info)
         
         total = (
-            trend_score * CONFIDENCE_TREND_WEIGHT +
-            reversion_score * CONFIDENCE_REVERSION_WEIGHT +
-            volume_score * CONFIDENCE_VOLUME_WEIGHT +
-            regime_score * CONFIDENCE_REGIME_WEIGHT
+            trend_score * _CONFIDENCE_TREND_WEIGHT +
+            reversion_score * _CONFIDENCE_REVERSION_WEIGHT +
+            volume_score * _CONFIDENCE_VOLUME_WEIGHT +
+            regime_score * _CONFIDENCE_REGIME_WEIGHT
         )
         
         total = max(0, min(1, total))
@@ -1447,18 +1438,18 @@ class ConfidenceEngine:
         parts = []
         
         if trend_score >= 70:
-            parts.append(f"Strong trend alignment")
+            parts.append("Strong trend alignment")
         elif trend_score <= 30:
-            parts.append(f"Weak trend alignment")
+            parts.append("Weak trend alignment")
         
         if reversion_score >= 70:
-            parts.append(f"Strong mean reversion signal")
+            parts.append("Strong reversion signal")
         
         if volume_score >= 70:
-            parts.append(f"Good volume confirmation")
+            parts.append("Good volume confirmation")
         
         if regime_score >= 70:
-            parts.append(f"Favorable market regime")
+            parts.append("Favorable market regime")
         
         if len(parts) == 0:
             parts.append("Mixed signals")
@@ -1586,9 +1577,9 @@ class DashboardServer:
         # If no real signals yet, show sample signals
         if len(top_signals) == 0:
             top_signals = [
-                {'symbol': 'ETHUSDT', 'decision': 'BUY', 'confidence': 82, 'explanation': 'Trend and Mean Reversion aligned. RSI oversold.'},
-                {'symbol': 'LINKUSDT', 'decision': 'BUY', 'confidence': 85, 'explanation': 'Trend and Mean Reversion aligned. RSI oversold.'},
-                {'symbol': 'DOGEUSDT', 'decision': 'SELL', 'confidence': 69, 'explanation': 'Mean Reversion suggests SHORT. RSI overbought.'}
+                {'symbol': 'ETHUSDT', 'decision': 'BUY', 'confidence': 82, 'explanation': 'Signals aligned - favorable entry.'},
+                {'symbol': 'LINKUSDT', 'decision': 'BUY', 'confidence': 85, 'explanation': 'Signals aligned - favorable entry.'},
+                {'symbol': 'DOGEUSDT', 'decision': 'SELL', 'confidence': 69, 'explanation': 'Mean reversion signal detected.'}
             ]
         
         return {'top_signals': top_signals}
@@ -2685,7 +2676,6 @@ class SymbolPrecisionManager:
         # Round using the tick size
         rounded = round(round(price / tick_size) * tick_size, precision)
         
-        # Log rounding details for debugging
         self.logger.info(f"[{symbol}] PRICE ROUNDING: original={price:.8f} rounded={rounded:.8f} tick={tick_size:.8f}")
         
         return rounded
@@ -3760,10 +3750,6 @@ class SignalConflictEngine:
             if ENABLE_HEDGE_MODE_COMPATIBILITY and position_side:
                 order_params['positionSide'] = position_side
             
-            # --- FIX: Remove reduceOnly for hedge mode compatibility ---
-            # For STOP_MARKET with positionSide, Binance does not want reduceOnly=True
-            # The closePosition=True already handles the reduce-only semantics
-            
             order = await self.client.futures_create_order(**order_params)
             
             if order and 'orderId' in order:
@@ -3825,10 +3811,6 @@ class SignalConflictEngine:
             
             if ENABLE_HEDGE_MODE_COMPATIBILITY and position_side:
                 order_params['positionSide'] = position_side
-            
-            # --- FIX: Remove reduceOnly for hedge mode compatibility ---
-            # For TAKE_PROFIT_MARKET with positionSide, Binance does not want reduceOnly=True
-            # The closePosition=True already handles the reduce-only semantics
             
             order = await self.client.futures_create_order(**order_params)
             
@@ -4054,9 +4036,6 @@ class SignalConflictEngine:
                 f"price={exit_signal['price']:.4f}"
             )
             
-            # --- FIX: Do not send reduceOnly=True when positionSide is supplied ---
-            # In Hedge Mode, using positionSide with closePosition=True is sufficient
-            # The reduceOnly parameter should be omitted entirely for hedge mode exits
             order = await self.safe_create_order(
                 symbol=symbol, side=exit_side, type='MARKET', quantity=quantity,
                 reduce_only=False,  # Always False - closePosition + positionSide handles it
@@ -4190,9 +4169,6 @@ class SignalConflictEngine:
             
             order_params = {'symbol': symbol, 'side': binance_side, 'type': type, 'quantity': quantity}
             
-            # --- FIX: Only add reduceOnly if explicitly requested and position_side is None ---
-            # In Hedge Mode, positionSide combined with closePosition=True is the correct way
-            # to close positions, and reduceOnly should not be sent separately.
             if reduce_only and position_side is None:
                 order_params['reduceOnly'] = True
             
@@ -4221,7 +4197,7 @@ class SignalConflictEngine:
                 order = await self.client.futures_create_order(**order_params)
                 return order
             else:
-                return None
+                return None        
         except Exception as e:
             logger.error(f"Error creating order for {symbol}: {e}")
             return None
